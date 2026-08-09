@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -102,6 +103,20 @@ def _form_scalar(value: object) -> FormScalar | None:
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
     return value
+
+
+def _nonnegative_seconds(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if re.fullmatch(r"[0-9]+", cleaned):
+            return int(cleaned)
+    return None
 
 
 def _walk_mappings(value: object):
@@ -524,10 +539,14 @@ class WeLearnRemoteClient:
         data: Mapping[str, object],
         cancellation: Cancellation | None,
     ) -> _HttpAttempt:
+        payload: dict[str, object] = {
+            "nocache": format(random.random(), ".17g"),
+            **data,
+        }
         return self._request(
             "POST",
             f"{APPLICATION_ORIGIN}{SCO_PATH}",
-            data=data,
+            data=payload,
             headers={"Referer": self._sco_referer(context)},
             cancellation=cancellation,
         )
@@ -648,8 +667,6 @@ class WeLearnRemoteClient:
             "uid": context.learner_id,
             "cid": context.course_id,
             "scoid": context.sco_id,
-            "classid": context.class_id,
-            "tid": "-1",
         }
         attempt = self._sco_request(context, data, cancellation)
         if attempt.outcome is not None:
@@ -684,7 +701,8 @@ class WeLearnRemoteClient:
     def _heartbeat(
         self,
         context: LessonContext,
-        state: ScoState,
+        session_time: int,
+        total_time: int,
         cancellation: Cancellation | None,
     ) -> RequestOutcome:
         attempt = self._sco_request(
@@ -694,10 +712,10 @@ class WeLearnRemoteClient:
                 "uid": context.learner_id,
                 "cid": context.course_id,
                 "scoid": context.sco_id,
-                "classid": context.class_id,
-                "tid": "-1",
-                "session_time": state.session_time,
-                "total_time": state.total_time,
+                "session_time": str(session_time),
+                "total_time": str(total_time),
+                "endcaltime": "false",
+                "timelimitsec": "3600",
             },
             cancellation,
         )
@@ -720,6 +738,30 @@ class WeLearnRemoteClient:
             return RequestOutcome.cancelled("cancelled during timed wait")
         return None
 
+    def _update_cmi_time(
+        self,
+        context: LessonContext,
+        session_time: int,
+        total_time: int,
+        cancellation: Cancellation | None,
+    ) -> RequestOutcome:
+        attempt = self._sco_request(
+            context,
+            {
+                "action": "updatecmitime",
+                "uid": context.learner_id,
+                "cid": context.course_id,
+                "scoid": context.sco_id,
+                "session_time": str(session_time),
+                "total_time": str(total_time),
+            },
+            cancellation,
+        )
+        if attempt.outcome is not None:
+            return attempt.outcome
+        assert attempt.response is not None
+        return self._ret_outcome(attempt.response)
+
     def run_timed_study(
         self,
         context: LessonContext,
@@ -734,17 +776,27 @@ class WeLearnRemoteClient:
             raise ValueError("duration_seconds must be a non-negative integer")
 
         steps: list[StepResult] = []
+        start_attempt = self._sco_request(context, self._start_fields(context), cancellation)
+        start_outcome = start_attempt.outcome
+        if start_outcome is None:
+            assert start_attempt.response is not None
+            start_outcome = self._ret_outcome(start_attempt.response)
+        steps.append(StepResult("start", start_outcome))
+        if start_outcome.kind is not OutcomeKind.ACCEPTED:
+            return WorkflowResult(start_outcome, tuple(steps))
+
         state_result = self._read_sco_state(context, cancellation)
         steps.append(StepResult("read_state", state_result.outcome))
         if state_result.outcome.kind is not OutcomeKind.ACCEPTED:
             return WorkflowResult(state_result.outcome, tuple(steps))
         assert state_result.value is not None
         state = state_result.value
-
-        initial = self._heartbeat(context, state, cancellation)
-        steps.append(StepResult("initialize_heartbeat", initial))
-        if initial.kind is not OutcomeKind.ACCEPTED:
-            return WorkflowResult(initial, tuple(steps))
+        initial_session_time = _nonnegative_seconds(state.session_time)
+        initial_total_time = _nonnegative_seconds(state.total_time)
+        if initial_session_time is None or initial_total_time is None:
+            outcome = RequestOutcome.unknown("SCO time state was not measured in seconds")
+            steps.append(StepResult("validate_time_state", outcome))
+            return WorkflowResult(outcome, tuple(steps))
 
         full_intervals, remainder = divmod(duration_seconds, 60)
         completed_intervals = 0
@@ -753,7 +805,13 @@ class WeLearnRemoteClient:
             if wait_outcome is not None:
                 return WorkflowResult(wait_outcome, tuple(steps), completed_intervals)
             completed_intervals += 1
-            heartbeat = self._heartbeat(context, state, cancellation)
+            elapsed_before_boundary = (interval - 1) * 60
+            heartbeat = self._heartbeat(
+                context,
+                initial_session_time + elapsed_before_boundary,
+                initial_total_time + elapsed_before_boundary,
+                cancellation,
+            )
             steps.append(StepResult(f"heartbeat_{interval}", heartbeat))
             if heartbeat.kind is not OutcomeKind.ACCEPTED:
                 return WorkflowResult(heartbeat, tuple(steps), completed_intervals)
@@ -770,13 +828,12 @@ class WeLearnRemoteClient:
                 "uid": context.learner_id,
                 "cid": context.course_id,
                 "scoid": context.sco_id,
-                "classid": context.class_id,
-                "tid": "-1",
                 "progress": state.progress_measure,
                 "crate": state.score_scaled,
                 "status": "unknown",
                 "cstatus": state.completion_status,
                 "trycount": "0",
+                "endcaltime": "false",
             },
             cancellation,
         )
@@ -785,4 +842,24 @@ class WeLearnRemoteClient:
             assert save_attempt.response is not None
             save_outcome = self._ret_outcome(save_attempt.response)
         steps.append(StepResult("save", save_outcome))
-        return WorkflowResult(save_outcome, tuple(steps), completed_intervals)
+
+        update_outcome = self._update_cmi_time(
+            context,
+            initial_session_time + duration_seconds,
+            initial_total_time + duration_seconds,
+            cancellation,
+        )
+        steps.append(StepResult("update_time", update_outcome))
+
+        final_outcomes = (save_outcome, update_outcome)
+        if all(item.kind is OutcomeKind.ACCEPTED for item in final_outcomes):
+            overall = RequestOutcome.accepted("timed study workflow accepted")
+        elif any(item.kind is OutcomeKind.CANCELLED for item in final_outcomes):
+            overall = RequestOutcome.cancelled("timed study workflow cancelled")
+        elif any(item.kind is OutcomeKind.ACCEPTED for item in final_outcomes):
+            overall = RequestOutcome.unknown("timed study workflow was only partially accepted")
+        elif any(item.kind is OutcomeKind.UNKNOWN for item in final_outcomes):
+            overall = RequestOutcome.unknown("timed study workflow result was unknown")
+        else:
+            overall = RequestOutcome.rejected("timed study workflow was rejected")
+        return WorkflowResult(overall, tuple(steps), completed_intervals)
