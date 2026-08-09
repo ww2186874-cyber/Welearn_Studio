@@ -1,0 +1,7 @@
+{
+  "info": [
+    {"name": "Unit Two", "visible": "true"},
+    {"name": "Unit One", "visible": "false"},
+    {"name": "Unit Three"}
+  ]
+}

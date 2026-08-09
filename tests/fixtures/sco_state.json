@@ -1,0 +1,11 @@
+{
+  "comment": {
+    "cmi": {
+      "session_time": "opaque-session",
+      "total_time": "opaque-total",
+      "progress_measure": "0.75",
+      "completion_status": "synthetic-status",
+      "score": {"scaled": "0.55"}
+    }
+  }
+}

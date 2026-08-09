@@ -1,0 +1,6 @@
+{
+  "clist": [
+    {"cid": "course-alpha", "name": "Synthetic Reading", "per": 24},
+    {"cid": "course-beta", "name": "Synthetic Listening"}
+  ]
+}

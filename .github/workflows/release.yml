@@ -1,0 +1,53 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+      - name: Verify
+        shell: pwsh
+        run: .\scripts\verify.ps1
+      - name: Check tag version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = .\.venv\Scripts\python.exe -c "import welearn_studio; print(welearn_studio.__version__)"
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version $version."
+          }
+      - name: Build
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -SkipVerification
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeLearn-Studio-windows
+          path: dist/
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            "dist/WeLearn-Studio-windows-x64.zip" `
+            --generate-notes

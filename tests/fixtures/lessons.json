@@ -1,0 +1,30 @@
+{
+  "info": [
+    {
+      "id": "lesson-visible",
+      "location": "Unit > Section > Visible",
+      "isvisible": "true",
+      "iscomplete": "synthetic-complete-label"
+    },
+    {
+      "id": "lesson-hidden",
+      "location": "Unit > Section > Hidden",
+      "isvisible": "false",
+      "iscomplete": "synthetic-incomplete-label"
+    },
+    {
+      "id": "lesson-unknown",
+      "location": "Unit > Section > Unknown"
+    },
+    {
+      "id": "lesson-unrecognized-marker",
+      "location": "Unit > Section > Unrecognized marker",
+      "isvisible": "TRUE"
+    },
+    {
+      "location": "Unit > Section > Missing identifier",
+      "isvisible": "true"
+    },
+    "not-an-object"
+  ]
+}
