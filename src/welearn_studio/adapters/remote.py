@@ -541,6 +541,8 @@ class WeLearnRemoteClient:
     ) -> _HttpAttempt:
         payload: dict[str, object] = {
             "nocache": format(random.random(), ".17g"),
+            "classid": context.class_id,
+            "tid": "-1",
             **data,
         }
         return self._request(
@@ -714,8 +716,6 @@ class WeLearnRemoteClient:
                 "scoid": context.sco_id,
                 "session_time": str(session_time),
                 "total_time": str(total_time),
-                "endcaltime": "false",
-                "timelimitsec": "3600",
             },
             cancellation,
         )
@@ -752,17 +752,22 @@ class WeLearnRemoteClient:
             raise ValueError("duration_seconds must be a non-negative integer")
 
         steps: list[StepResult] = []
-        start_attempt = self._sco_request(context, self._start_fields(context), cancellation)
-        start_outcome = start_attempt.outcome
-        if start_outcome is None:
-            assert start_attempt.response is not None
-            start_outcome = self._ret_outcome(start_attempt.response)
-        steps.append(StepResult("start", start_outcome))
-        if start_outcome.kind is not OutcomeKind.ACCEPTED:
-            return WorkflowResult(start_outcome, tuple(steps))
-
         state_result = self._read_sco_state(context, cancellation)
         steps.append(StepResult("read_state", state_result.outcome))
+        if (
+            state_result.outcome.kind is OutcomeKind.UNKNOWN
+            and state_result.outcome.detail == "SCO state was malformed"
+        ):
+            start_attempt = self._sco_request(context, self._start_fields(context), cancellation)
+            start_outcome = start_attempt.outcome
+            if start_outcome is None:
+                assert start_attempt.response is not None
+                start_outcome = self._ret_outcome(start_attempt.response)
+            steps.append(StepResult("start", start_outcome))
+            if start_outcome.kind is not OutcomeKind.ACCEPTED:
+                return WorkflowResult(start_outcome, tuple(steps))
+            state_result = self._read_sco_state(context, cancellation)
+            steps.append(StepResult("read_state_after_start", state_result.outcome))
         if state_result.outcome.kind is not OutcomeKind.ACCEPTED:
             return WorkflowResult(state_result.outcome, tuple(steps))
         assert state_result.value is not None
@@ -818,7 +823,6 @@ class WeLearnRemoteClient:
                 "status": "unknown",
                 "cstatus": state.completion_status,
                 "trycount": "0",
-                "endcaltime": "false",
             },
             cancellation,
         )
