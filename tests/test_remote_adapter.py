@@ -532,15 +532,15 @@ class HomeworkWorkflowTests(unittest.TestCase):
 
 
 class TimedWorkflowTests(unittest.TestCase):
-    def test_full_intervals_increment_heartbeats_then_finalize_time(self) -> None:
+    def test_full_intervals_replay_initial_state_and_finish_with_save(self) -> None:
         waiter = RecordingWaiter()
         transport = RecordingTransport(
             [
                 FakeResponse({"ret": 0}),
                 FakeResponse(load_json("sco_state.json")),
+                FakeResponse(text="synthetic-initial-ticket"),
                 FakeResponse(text="synthetic-ticket-one"),
                 FakeResponse(text="synthetic-ticket-two"),
-                FakeResponse({"ret": 0}),
                 FakeResponse({"ret": 0}),
             ]
         )
@@ -559,38 +559,30 @@ class TimedWorkflowTests(unittest.TestCase):
                 "getscoinfo_v7",
                 "keepsco_with_getticket_with_updatecmitime",
                 "keepsco_with_getticket_with_updatecmitime",
+                "keepsco_with_getticket_with_updatecmitime",
                 "savescoinfo160928",
-                "updatecmitime",
             ],
         )
-        first_heartbeat = transport.requests[2]["data"]
-        second_heartbeat = transport.requests[3]["data"]
-        self.assertEqual(first_heartbeat["session_time"], "0")
-        self.assertEqual(first_heartbeat["total_time"], "6")
-        self.assertEqual(second_heartbeat["session_time"], "60")
-        self.assertEqual(second_heartbeat["total_time"], "66")
-        for heartbeat in (first_heartbeat, second_heartbeat):
+        heartbeats = [request["data"] for request in transport.requests[2:5]]
+        for heartbeat in heartbeats:
+            self.assertEqual(heartbeat["session_time"], "0")
+            self.assertEqual(heartbeat["total_time"], "6")
             self.assertEqual(heartbeat["endcaltime"], "false")
             self.assertEqual(heartbeat["timelimitsec"], "3600")
             self.assertNotIn("classid", heartbeat)
             self.assertNotIn("tid", heartbeat)
 
-        save = transport.requests[-2]["data"]
+        save = transport.requests[-1]["data"]
         self.assertEqual(save["progress"], "0.75")
         self.assertEqual(save["crate"], "0.55")
         self.assertEqual(save["cstatus"], "synthetic-status")
         self.assertEqual(save["endcaltime"], "false")
-        update = transport.requests[-1]["data"]
-        self.assertEqual(update["session_time"], "125")
-        self.assertEqual(update["total_time"], "131")
-        self.assertNotIn("classid", update)
-        self.assertNotIn("tid", update)
         for request in transport.requests:
             self.assertIn("nocache", request["data"])
             self.assertLess(float(request["data"]["nocache"]), 1.0)
         self.assertNotIn("ticket", result.outcome.detail)
 
-    def test_seconds_below_interval_finalize_without_periodic_heartbeat(self) -> None:
+    def test_seconds_below_interval_use_initial_heartbeat_then_save(self) -> None:
         waiter = RecordingWaiter()
         transport = RecordingTransport(
             [
@@ -605,11 +597,32 @@ class TimedWorkflowTests(unittest.TestCase):
         self.assertEqual(waiter.calls, [59])
         self.assertEqual(
             [request["data"]["action"] for request in transport.requests],
-            ["startsco160928", "getscoinfo_v7", "savescoinfo160928", "updatecmitime"],
+            [
+                "startsco160928",
+                "getscoinfo_v7",
+                "keepsco_with_getticket_with_updatecmitime",
+                "savescoinfo160928",
+            ],
         )
-        update = transport.requests[-1]["data"]
-        self.assertEqual(update["session_time"], "59")
-        self.assertEqual(update["total_time"], "65")
+
+    def test_rejected_initial_heartbeat_stops_before_wait_and_save(self) -> None:
+        waiter = RecordingWaiter()
+        transport = RecordingTransport(
+            [
+                FakeResponse({"ret": 0}),
+                FakeResponse(load_json("sco_state.json")),
+                FakeResponse(status_code=409),
+            ]
+        )
+
+        result = WeLearnRemoteClient(transport, waiter=waiter).run_timed_study(
+            lesson_context(), 120
+        )
+
+        self.assertEqual(result.outcome.kind, OutcomeKind.REJECTED)
+        self.assertEqual(result.completed_intervals, 0)
+        self.assertEqual(waiter.calls, [])
+        self.assertEqual(len(transport.requests), 3)
 
     def test_rejected_periodic_heartbeat_stops_before_save(self) -> None:
         waiter = RecordingWaiter()
@@ -617,6 +630,7 @@ class TimedWorkflowTests(unittest.TestCase):
             [
                 FakeResponse({"ret": 0}),
                 FakeResponse(load_json("sco_state.json")),
+                FakeResponse(text="synthetic-initial-ticket"),
                 FakeResponse(status_code=409),
             ]
         )
@@ -626,20 +640,24 @@ class TimedWorkflowTests(unittest.TestCase):
         self.assertEqual(result.outcome.kind, OutcomeKind.REJECTED)
         self.assertEqual(result.completed_intervals, 1)
         self.assertEqual(waiter.calls, [60])
-        self.assertEqual(len(transport.requests), 3)
+        self.assertEqual(len(transport.requests), 4)
 
     def test_cancellation_during_wait_skips_heartbeat_and_save(self) -> None:
         waiter = RecordingWaiter([True])
         cancellation = StubCancellation()
         transport = RecordingTransport(
-            [FakeResponse({"ret": 0}), FakeResponse(load_json("sco_state.json"))]
+            [
+                FakeResponse({"ret": 0}),
+                FakeResponse(load_json("sco_state.json")),
+                FakeResponse(text="synthetic-initial-ticket"),
+            ]
         )
         result = WeLearnRemoteClient(transport, waiter=waiter).run_timed_study(
             lesson_context(), 60, cancellation
         )
         self.assertEqual(result.outcome.kind, OutcomeKind.CANCELLED)
         self.assertEqual(result.completed_intervals, 0)
-        self.assertEqual(len(transport.requests), 2)
+        self.assertEqual(len(transport.requests), 3)
 
     def test_malformed_state_and_missing_save_ret_remain_unknown(self) -> None:
         malformed_transport = RecordingTransport(
@@ -652,8 +670,8 @@ class TimedWorkflowTests(unittest.TestCase):
             [
                 FakeResponse({"ret": 0}),
                 FakeResponse(load_json("sco_state.json")),
+                FakeResponse(text="synthetic-initial-ticket"),
                 FakeResponse({}),
-                FakeResponse({"ret": 0}),
             ]
         )
         no_ret = WeLearnRemoteClient(no_ret_transport, waiter=RecordingWaiter()).run_timed_study(
@@ -682,7 +700,7 @@ class TimedWorkflowTests(unittest.TestCase):
             lesson_context(), 0
         )
         self.assertEqual(result.outcome.kind, OutcomeKind.ACCEPTED)
-        self.assertEqual(transport.requests[-2]["data"]["progress"], "0")
+        self.assertEqual(transport.requests[-1]["data"]["progress"], "0")
 
     def test_non_numeric_time_state_is_not_replayed_as_elapsed_seconds(self) -> None:
         invalid_state = {
@@ -706,54 +724,42 @@ class TimedWorkflowTests(unittest.TestCase):
         self.assertEqual(len(transport.requests), 2)
         self.assertEqual(result.steps[-1].name, "validate_time_state")
 
-    def test_sanitized_browser_trace_matches_incrementing_time_protocol(self) -> None:
-        trace = load_json("timed_study_browser_trace.json")
-        self.assertIsInstance(trace, dict)
-        events = trace["events"]
-        heartbeats = [
-            event
-            for event in events
-            if event["action"] == "keepsco_with_getticket_with_updatecmitime"
-        ]
-        final = events[-1]
-        duration_seconds = final["session_time"] - heartbeats[0]["session_time"]
+    def test_three_minutes_send_initial_plus_three_periodic_heartbeats(self) -> None:
         transport = RecordingTransport(
             [
                 FakeResponse({"ret": 0}),
                 FakeResponse(load_json("sco_state.json")),
+                FakeResponse(text="synthetic-initial-ticket"),
                 FakeResponse(text="synthetic-ticket-one"),
                 FakeResponse(text="synthetic-ticket-two"),
                 FakeResponse(text="synthetic-ticket-three"),
-                FakeResponse({"ret": 0}),
                 FakeResponse({"ret": 0}),
             ]
         )
         waiter = RecordingWaiter()
 
         result = WeLearnRemoteClient(transport, waiter=waiter).run_timed_study(
-            lesson_context(), duration_seconds
+            lesson_context(), 180
         )
 
         self.assertEqual(result.outcome.kind, OutcomeKind.ACCEPTED)
-        self.assertEqual(waiter.calls, [60, 60, 60, 12])
+        self.assertEqual(result.completed_intervals, 3)
+        self.assertEqual(waiter.calls, [60, 60, 60])
         self.assertEqual(
             [request["data"]["action"] for request in transport.requests],
-            [event["action"] for event in events],
+            [
+                "startsco160928",
+                "getscoinfo_v7",
+                "keepsco_with_getticket_with_updatecmitime",
+                "keepsco_with_getticket_with_updatecmitime",
+                "keepsco_with_getticket_with_updatecmitime",
+                "keepsco_with_getticket_with_updatecmitime",
+                "savescoinfo160928",
+            ],
         )
-        actual_heartbeats = transport.requests[2:5]
-        for request, observed in zip(actual_heartbeats, heartbeats, strict=True):
-            self.assertLessEqual(
-                abs(int(request["data"]["session_time"]) - observed["session_time"]), 1
-            )
-            self.assertLessEqual(
-                abs(int(request["data"]["total_time"]) - observed["total_time"]), 1
-            )
-            self.assertEqual(request["data"]["endcaltime"], observed["endcaltime"])
-            self.assertEqual(int(request["data"]["timelimitsec"]), observed["timelimitsec"])
-        update = transport.requests[-1]["data"]
-        self.assertEqual(int(update["session_time"]), final["session_time"])
-        self.assertEqual(int(update["total_time"]), final["total_time"])
-        self.assertEqual(int(update["total_time"]), trace["display_delta_seconds"])
+        for request in transport.requests[2:6]:
+            self.assertEqual(request["data"]["session_time"], "0")
+            self.assertEqual(request["data"]["total_time"], "6")
 
 
 if __name__ == "__main__":

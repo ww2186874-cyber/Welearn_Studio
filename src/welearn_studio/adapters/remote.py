@@ -738,30 +738,6 @@ class WeLearnRemoteClient:
             return RequestOutcome.cancelled("cancelled during timed wait")
         return None
 
-    def _update_cmi_time(
-        self,
-        context: LessonContext,
-        session_time: int,
-        total_time: int,
-        cancellation: Cancellation | None,
-    ) -> RequestOutcome:
-        attempt = self._sco_request(
-            context,
-            {
-                "action": "updatecmitime",
-                "uid": context.learner_id,
-                "cid": context.course_id,
-                "scoid": context.sco_id,
-                "session_time": str(session_time),
-                "total_time": str(total_time),
-            },
-            cancellation,
-        )
-        if attempt.outcome is not None:
-            return attempt.outcome
-        assert attempt.response is not None
-        return self._ret_outcome(attempt.response)
-
     def run_timed_study(
         self,
         context: LessonContext,
@@ -798,6 +774,16 @@ class WeLearnRemoteClient:
             steps.append(StepResult("validate_time_state", outcome))
             return WorkflowResult(outcome, tuple(steps))
 
+        initial_heartbeat = self._heartbeat(
+            context,
+            initial_session_time,
+            initial_total_time,
+            cancellation,
+        )
+        steps.append(StepResult("heartbeat_initial", initial_heartbeat))
+        if initial_heartbeat.kind is not OutcomeKind.ACCEPTED:
+            return WorkflowResult(initial_heartbeat, tuple(steps))
+
         full_intervals, remainder = divmod(duration_seconds, 60)
         completed_intervals = 0
         for interval in range(1, full_intervals + 1):
@@ -805,11 +791,10 @@ class WeLearnRemoteClient:
             if wait_outcome is not None:
                 return WorkflowResult(wait_outcome, tuple(steps), completed_intervals)
             completed_intervals += 1
-            elapsed_before_boundary = (interval - 1) * 60
             heartbeat = self._heartbeat(
                 context,
-                initial_session_time + elapsed_before_boundary,
-                initial_total_time + elapsed_before_boundary,
+                initial_session_time,
+                initial_total_time,
                 cancellation,
             )
             steps.append(StepResult(f"heartbeat_{interval}", heartbeat))
@@ -842,24 +827,4 @@ class WeLearnRemoteClient:
             assert save_attempt.response is not None
             save_outcome = self._ret_outcome(save_attempt.response)
         steps.append(StepResult("save", save_outcome))
-
-        update_outcome = self._update_cmi_time(
-            context,
-            initial_session_time + duration_seconds,
-            initial_total_time + duration_seconds,
-            cancellation,
-        )
-        steps.append(StepResult("update_time", update_outcome))
-
-        final_outcomes = (save_outcome, update_outcome)
-        if all(item.kind is OutcomeKind.ACCEPTED for item in final_outcomes):
-            overall = RequestOutcome.accepted("timed study workflow accepted")
-        elif any(item.kind is OutcomeKind.CANCELLED for item in final_outcomes):
-            overall = RequestOutcome.cancelled("timed study workflow cancelled")
-        elif any(item.kind is OutcomeKind.ACCEPTED for item in final_outcomes):
-            overall = RequestOutcome.unknown("timed study workflow was only partially accepted")
-        elif any(item.kind is OutcomeKind.UNKNOWN for item in final_outcomes):
-            overall = RequestOutcome.unknown("timed study workflow result was unknown")
-        else:
-            overall = RequestOutcome.rejected("timed study workflow was rejected")
-        return WorkflowResult(overall, tuple(steps), completed_intervals)
+        return WorkflowResult(save_outcome, tuple(steps), completed_intervals)
