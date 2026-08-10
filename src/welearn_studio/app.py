@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from welearn_studio import __version__
 from welearn_studio.application import StudioController
 from welearn_studio.services.settings import JsonSettingsStore, SettingsError
 from welearn_studio.ui import MainWindow
@@ -29,7 +30,7 @@ def should_restore_last_account_file() -> bool:
 def main() -> int:
     QCoreApplication.setOrganizationName("WeLearn Studio")
     QCoreApplication.setApplicationName("WeLearn Studio")
-    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setApplicationVersion(__version__)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
     try:
