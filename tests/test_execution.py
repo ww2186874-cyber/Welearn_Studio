@@ -72,6 +72,33 @@ class ExecutionTests(unittest.TestCase):
         CooperativeTaskRunner(3).run(list(range(9)), operation)
         self.assertEqual(maximum, 3)
 
+    def test_runner_supports_more_than_thirty_three_workers(self) -> None:
+        lock = threading.Lock()
+        release = threading.Event()
+        forty_started = threading.Event()
+        active = 0
+        maximum = 0
+
+        def operation(_task: int, _token: object) -> RequestOutcome:
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active == 40:
+                    forty_started.set()
+            release.wait(2)
+            with lock:
+                active -= 1
+            return RequestOutcome.accepted()
+
+        handle = CooperativeTaskRunner(100).start(list(range(40)), operation)
+        self.assertTrue(forty_started.wait(2))
+        release.set()
+        report = handle.join(2)
+
+        self.assertEqual(maximum, 40)
+        self.assertEqual(len(report.results), 40)
+
     def test_lifecycle_callbacks_describe_only_active_tasks(self) -> None:
         lock = threading.Lock()
         active: set[int] = set()

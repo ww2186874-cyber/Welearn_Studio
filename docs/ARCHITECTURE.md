@@ -19,6 +19,7 @@ PySide6 界面层
 - `welearn_studio.domain`：身份、任务计划、执行结果、快照和确定性规划规则。
 - `welearn_studio.services`：账号解析、设置管理、可取消执行和服务端口。
 - `welearn_studio.adapters`：具体的 HTTP 与文件系统集成。
+- `welearn_studio.application`：账号会话编排，以及不依赖 Qt 的任务准备和任务运行服务。
 - `welearn_studio.ui`：PySide6 界面和视图状态组合。
 - `welearn_studio.app`：依赖组装入口和进程生命周期。
 
@@ -34,6 +35,12 @@ PySide6 界面层
 6. 取消采用协作式机制；程序退出前必须正常回收工作线程。
 7. 远程适配器测试只使用合成夹具，不得连接真实服务。
 8. 界面模块不得构造 HTTP 请求体或解释远程响应。
+
+## 任务执行边界
+
+`application.task_execution` 将课程配置转换为不可变的 `PreparedTaskRun`，并负责把任务模式映射到远程操作。Qt 控制器只保存配置、发布运行状态和转发任务事件。
+
+`services.execution` 只提供固定批次、并发上限、结果归位和协作式取消，不解释课程、小课或远程协议。计时计划继续使用整分钟平均分配，不能整除的余数在任务启动前明确舍弃。
 
 ## 远程集成准入规则
 

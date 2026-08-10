@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -30,7 +29,6 @@ from welearn_studio.domain import (
     CourseSettings,
     LessonDefinition,
     LessonIdentity,
-    LessonTarget,
     OutcomeKind,
     RequestOutcome,
     TaskMode,
@@ -43,16 +41,11 @@ from welearn_studio.domain import (
 )
 from welearn_studio.services.account_import import AccountCredential, parse_account_file
 from welearn_studio.services.execution import (
-    CooperativeTaskRunner,
     ExecutionHandle,
     ExecutionReport,
     TaskResult,
 )
-from welearn_studio.services.planning import (
-    InsufficientStudyTime,
-    PlannedLesson,
-    create_time_study_plan,
-)
+from welearn_studio.services.planning import InsufficientStudyTime
 from welearn_studio.services.presets import apply_preset, capture_preset
 from welearn_studio.services.settings import JsonSettingsStore, hashed_key
 from welearn_studio.ui import AddAccountDialog
@@ -67,6 +60,16 @@ from welearn_studio.ui.presentation import (
     RuntimeView,
     UnitView,
     format_duration,
+)
+
+from .task_execution import (
+    MissingLessonContexts,
+    NoRunnableLessons,
+    PreparedTask,
+    PreparedTaskRun,
+    TaskRunCallbacks,
+    prepare_task_run,
+    start_task_run,
 )
 
 RemoteFactory = Callable[[], WeLearnRemoteClient]
@@ -474,185 +477,28 @@ class StudioController(QObject):
             return
         if session.active_handle is not None or session.busy:
             return
-        course_id = session.selected_course_id
-        catalog = session.catalogs.get(course_id)
-        contexts = session.lesson_contexts.get(course_id, {})
-        if catalog is None:
-            self._append_log(session, "warning", "任务", "课程内容尚未加载")
+        prepared = self._prepare_current_task(session, snapshot)
+        if prepared is None:
             return
-        targets = self._selected_targets(catalog, snapshot)
-        if not targets:
-            self._append_log(session, "warning", "任务", "没有可运行的已选课时")
-            return
-        missing_contexts = tuple(
-            target
-            for target in targets
-            if (target.unit.stable_id, target.lesson.stable_id) not in contexts
-        )
-        if missing_contexts:
+
+        if prepared.mode is TaskMode.TIME_STUDY:
             self._append_log(
                 session,
-                "error",
-                "任务",
-                f"{len(missing_contexts)} 个小课缺少运行信息，请刷新课程后重试；任务未启动",
-            )
-            return
-        failure_lock = threading.Lock()
-        failure_announced = False
-
-        def halt_after_failure(outcome: RequestOutcome, token) -> RequestOutcome:
-            nonlocal failure_announced
-            if outcome.kind not in {OutcomeKind.REJECTED, OutcomeKind.UNKNOWN}:
-                return outcome
-            token.cancel()
-            with failure_lock:
-                if failure_announced:
-                    return outcome
-                failure_announced = True
-            self._task_log.emit(
-                session.stable_id,
-                "warning",
-                "任务",
-                "小课请求未被确认，已停止后续任务",
-            )
-            return outcome
-
-        try:
-            settings = self._snapshot_to_settings(snapshot)
-            self.settings.save_course(session.identity, catalog.identity, settings)
-            platform_seconds = 0
-            estimated_seconds = 0
-            if snapshot.mode == TaskMode.TIME_STUDY.value:
-                plan = create_time_study_plan(
-                    targets,
-                    total_hours=snapshot.total_hours,
-                    random_minutes=snapshot.random_minutes,
-                    concurrency=snapshot.concurrency,
-                )
-                tasks: tuple[object, ...] = plan.lessons
-
-                def operation(item, token):
-                    outcome = session.client.run_timed_study(
-                        contexts[(item.target.unit.stable_id, item.target.lesson.stable_id)],
-                        item.duration_minutes * 60,
-                        token,
-                    ).outcome
-                    return halt_after_failure(outcome, token)
-
-                state = "time_study"
-                platform_seconds = plan.actual_platform_seconds
-                estimated_seconds = plan.estimated_wall_minutes * 60
-                self._append_log(
-                    session,
-                    "info",
-                    "计划",
-                    f"{len(tasks)} 个课时，实际可刷 {format_duration(platform_seconds)}；"
-                    f"舍弃余数 {format_duration(plan.discarded_remainder_seconds)}；"
-                    f"预计实际运行 {format_duration(estimated_seconds)}",
-                )
-            else:
-                tasks = tuple(targets)
-
-                def operation(item, token):
-                    outcome = session.client.submit_homework(
-                        contexts[(item.unit.stable_id, item.lesson.stable_id)],
-                        snapshot.accuracy,
-                        token,
-                    ).outcome
-                    return halt_after_failure(outcome, token)
-
-                state = "homework"
-        except InsufficientStudyTime as error:
-            self._append_log(
-                session,
-                "warning",
+                "info",
                 "计划",
-                f"总时长不足：本次可分配 {error.available_minutes} 分钟，"
-                f"已选 {error.lesson_count} 个小课至少需要 {error.lesson_count} 分钟，任务未启动",
-            )
-            return
-        except (KeyError, ValueError):
-            self._append_log(session, "error", "任务", "当前任务配置无效")
-            return
-
-        def task_target(item: object) -> LessonTarget:
-            target = item.target if isinstance(item, PlannedLesson) else item
-            if not isinstance(target, LessonTarget):
-                raise TypeError("task does not contain a lesson target")
-            return target
-
-        def task_message(item: object) -> str:
-            target = task_target(item)
-            if isinstance(item, PlannedLesson):
-                return f"{target.unit.name} > {target.lesson.name} · {item.duration_minutes} 分钟"
-            return f"{target.unit.name} > {target.lesson.name}"
-
-        def task_key(item: object) -> str:
-            target = task_target(item)
-            return f"{target.unit.stable_id}:{target.lesson.stable_id}"
-
-        def task_started(item: object) -> None:
-            self._task_started.emit(session.stable_id, task_key(item), task_message(item))
-
-        def task_finished(result: TaskResult[object]) -> None:
-            target = task_target(result.task)
-            self._task_result.emit(
-                session.stable_id,
-                task_key(result.task),
-                target.lesson.name,
-                result.started,
-                result.outcome,
+                f"{len(prepared.tasks)} 个课时，"
+                f"实际可刷 {format_duration(prepared.platform_seconds)}；"
+                f"舍弃余数 {format_duration(prepared.discarded_remainder_seconds)}；"
+                f"预计实际运行 {format_duration(prepared.estimated_seconds)}",
             )
 
-        batch_number = 0
-
-        def batch_started(items: tuple[object, ...]) -> None:
-            nonlocal batch_number
-            batch_number += 1
-            self._task_batch_started.emit(
-                session.stable_id,
-                batch_number,
-                tuple(task_message(item) for item in items),
-            )
-
-        def batch_finished(results: tuple[TaskResult[object], ...]) -> None:
-            self._task_batch_finished.emit(session.stable_id, batch_number, results)
-
-        runner = CooperativeTaskRunner(snapshot.concurrency)
-        handle = runner.start(
-            tasks,
-            operation,
-            on_started=task_started,
-            on_finished=task_finished,
-            on_batch_started=batch_started,
-            on_batch_finished=batch_finished,
+        handle = start_task_run(
+            prepared,
+            session.client,
+            self._task_callbacks(session),
             defer_start=True,
         )
-        session.active_handle = handle
-        session.active_tasks.clear()
-        session.reported_task_ids.clear()
-        session.batch_number = 0
-        session.state = state
-        now = time.monotonic()
-        session.countdown_started_at = now if estimated_seconds else None
-        session.countdown_deadline = now + estimated_seconds if estimated_seconds else None
-        session.runtime = RuntimeView(
-            state=state,
-            completed=0,
-            planned=len(tasks),
-            platform_seconds=platform_seconds,
-            estimated_seconds=estimated_seconds,
-            remaining_seconds=estimated_seconds,
-            active=0,
-            concurrency=snapshot.concurrency,
-        )
-        if estimated_seconds:
-            self._ensure_countdown_timer()
-        self._publish_account(session)
-        if self._current_account_id == session.stable_id:
-            self.window.set_runtime(session.runtime)
-            self.window.set_active_tasks([], snapshot.concurrency)
-        # Release the runner only after the session and UI have a handle to it.
+        self._activate_task_session(session, prepared, handle)
         handle.activate()
 
         def await_report() -> _TaskFinished:
@@ -664,20 +510,118 @@ class StudioController(QObject):
             failure=lambda: _TaskFailed(session.stable_id),
         )
 
-    @staticmethod
-    def _selected_targets(
-        catalog: CourseCatalog, snapshot: CoursePageSnapshot
-    ) -> tuple[LessonTarget, ...]:
-        targets: list[LessonTarget] = []
-        for unit in catalog.units:
-            if unit.identity.stable_id not in snapshot.selected_unit_ids:
-                continue
-            default_ids = frozenset(lesson.identity.stable_id for lesson in unit.runnable_lessons)
-            selected_ids = snapshot.selected_lessons.get(unit.identity.stable_id, default_ids)
-            for lesson in unit.runnable_lessons:
-                if lesson.identity.stable_id in selected_ids:
-                    targets.append(LessonTarget(unit.identity, lesson.identity))
-        return tuple(targets)
+    def _prepare_current_task(
+        self,
+        session: _AccountSession,
+        snapshot: CoursePageSnapshot,
+    ) -> PreparedTaskRun | None:
+        assert session.selected_course_id is not None
+        course_id = session.selected_course_id
+        catalog = session.catalogs.get(course_id)
+        if catalog is None:
+            self._append_log(session, "warning", "任务", "课程内容尚未加载")
+            return None
+        try:
+            settings = self._snapshot_to_settings(snapshot)
+            prepared = prepare_task_run(
+                catalog,
+                settings,
+                session.lesson_contexts.get(course_id, {}),
+            )
+            self.settings.save_course(session.identity, catalog.identity, settings)
+            return prepared
+        except NoRunnableLessons:
+            self._append_log(session, "warning", "任务", "没有可运行的已选课时")
+        except MissingLessonContexts as error:
+            self._append_log(
+                session,
+                "error",
+                "任务",
+                f"{len(error.missing)} 个小课缺少运行信息，请刷新课程后重试；任务未启动",
+            )
+        except InsufficientStudyTime as error:
+            self._append_log(
+                session,
+                "warning",
+                "计划",
+                f"总时长不足：本次可分配 {error.available_minutes} 分钟，"
+                f"已选 {error.lesson_count} 个小课至少需要 {error.lesson_count} 分钟，任务未启动",
+            )
+        except (KeyError, ValueError):
+            self._append_log(session, "error", "任务", "当前任务配置无效")
+        return None
+
+    def _task_callbacks(self, session: _AccountSession) -> TaskRunCallbacks:
+        def task_started(task: PreparedTask) -> None:
+            self._task_started.emit(session.stable_id, task.stable_id, task.display_name)
+
+        def task_finished(result: TaskResult[PreparedTask]) -> None:
+            self._task_result.emit(
+                session.stable_id,
+                result.task.stable_id,
+                result.task.target.lesson.name,
+                result.started,
+                result.outcome,
+            )
+
+        def batch_started(batch_number: int, tasks: tuple[PreparedTask, ...]) -> None:
+            self._task_batch_started.emit(
+                session.stable_id,
+                batch_number,
+                tuple(task.display_name for task in tasks),
+            )
+
+        def batch_finished(
+            batch_number: int,
+            results: tuple[TaskResult[PreparedTask], ...],
+        ) -> None:
+            self._task_batch_finished.emit(session.stable_id, batch_number, results)
+
+        return TaskRunCallbacks(
+            on_started=task_started,
+            on_finished=task_finished,
+            on_batch_started=batch_started,
+            on_batch_finished=batch_finished,
+            on_halted=lambda: self._task_log.emit(
+                session.stable_id,
+                "warning",
+                "任务",
+                "小课请求未被确认，已停止后续任务",
+            ),
+        )
+
+    def _activate_task_session(
+        self,
+        session: _AccountSession,
+        prepared: PreparedTaskRun,
+        handle: ExecutionHandle[PreparedTask],
+    ) -> None:
+        session.active_handle = handle
+        session.active_tasks.clear()
+        session.reported_task_ids.clear()
+        session.batch_number = 0
+        session.state = prepared.mode.value
+        now = time.monotonic()
+        session.countdown_started_at = now if prepared.estimated_seconds else None
+        session.countdown_deadline = (
+            now + prepared.estimated_seconds if prepared.estimated_seconds else None
+        )
+        session.runtime = RuntimeView(
+            state=prepared.mode.value,
+            completed=0,
+            planned=len(prepared.tasks),
+            platform_seconds=prepared.platform_seconds,
+            estimated_seconds=prepared.estimated_seconds,
+            remaining_seconds=prepared.estimated_seconds,
+            active=0,
+            concurrency=prepared.concurrency,
+        )
+        if prepared.estimated_seconds:
+            self._ensure_countdown_timer()
+        self._publish_account(session)
+        if self._current_account_id == session.stable_id:
+            self.window.set_runtime(session.runtime)
+            self.window.set_active_tasks([], prepared.concurrency)
 
     def stop_current_task(self) -> None:
         session = self.current_session

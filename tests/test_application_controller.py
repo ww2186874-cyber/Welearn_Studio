@@ -244,7 +244,7 @@ class ApplicationControllerTests(unittest.TestCase):
         self.window.workspace.mode.set_value("time_study")
 
         with patch(
-            "welearn_studio.application.controller.create_time_study_plan",
+            "welearn_studio.application.task_execution.create_time_study_plan",
             side_effect=InsufficientStudyTime(55, 70),
         ):
             self.controller.start_task(self.window.workspace.snapshot())

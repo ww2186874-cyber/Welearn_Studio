@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Generic, Sequence, TypeVar
 
 from welearn_studio.domain.outcomes import RequestOutcome
@@ -67,6 +67,47 @@ BatchStartedCallback = Callable[[tuple[TaskT, ...]], None]
 BatchFinishedCallback = Callable[[tuple[TaskResult[TaskT], ...]], None]
 
 
+@dataclass(frozen=True, slots=True)
+class _RunnerCallbacks(Generic[TaskT]):
+    on_progress: ProgressCallback | None = None
+    on_started: Callable[[TaskT], None] | None = None
+    on_finished: Callable[[TaskResult[TaskT]], None] | None = None
+    on_batch_started: BatchStartedCallback[TaskT] | None = None
+    on_batch_finished: BatchFinishedCallback[TaskT] | None = None
+
+
+@dataclass(slots=True)
+class _ExecutionState(Generic[TaskT]):
+    tasks: tuple[TaskT, ...]
+    results: list[TaskResult[TaskT] | None]
+    completed: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @classmethod
+    def create(cls, tasks: tuple[TaskT, ...]) -> _ExecutionState[TaskT]:
+        return cls(tasks, [None] * len(tasks))
+
+    def record(
+        self,
+        index: int,
+        result: TaskResult[TaskT],
+        callback: ProgressCallback | None,
+    ) -> None:
+        with self.lock:
+            self.results[index] = result
+            self.completed += 1
+            if callback is None:
+                return
+            try:
+                callback(ExecutionProgress(self.completed, len(self.tasks)))
+            except Exception:
+                # Observers do not own task execution.
+                pass
+
+    def report(self) -> ExecutionReport[TaskT]:
+        return ExecutionReport(tuple(result for result in self.results if result is not None))
+
+
 class ExecutionHandle(Generic[TaskT]):
     def __init__(self, token: CancellationToken) -> None:
         self._token = token
@@ -124,18 +165,16 @@ class CooperativeTaskRunner:
         task_tuple = tuple(tasks)
         cancellation = token or CancellationToken()
         handle: ExecutionHandle[TaskT] = ExecutionHandle(cancellation)
+        callbacks = _RunnerCallbacks(
+            on_progress,
+            on_started,
+            on_finished,
+            on_batch_started,
+            on_batch_finished,
+        )
         coordinator = threading.Thread(
             target=self._coordinate,
-            args=(
-                task_tuple,
-                operation,
-                on_progress,
-                on_started,
-                on_finished,
-                on_batch_started,
-                on_batch_finished,
-                handle,
-            ),
+            args=(task_tuple, operation, callbacks, handle),
             name="welearn-task-coordinator",
             daemon=False,
         )
@@ -176,11 +215,7 @@ class CooperativeTaskRunner:
         self,
         tasks: tuple[TaskT, ...],
         operation: Operation[TaskT],
-        on_progress: ProgressCallback | None,
-        on_started: Callable[[TaskT], None] | None,
-        on_finished: Callable[[TaskResult[TaskT]], None] | None,
-        on_batch_started: BatchStartedCallback[TaskT] | None,
-        on_batch_finished: BatchFinishedCallback[TaskT] | None,
+        callbacks: _RunnerCallbacks[TaskT],
         handle: ExecutionHandle[TaskT],
     ) -> None:
         # The controller can defer the first callback until its session state
@@ -188,86 +223,7 @@ class CooperativeTaskRunner:
         # narrow window between starting a worker and publishing the UI state.
         handle._start_gate.wait()
         token = handle.token
-        result_slots: list[TaskResult[TaskT] | None] = [None] * len(tasks)
-        completed = 0
-        lock = threading.Lock()
-
-        def publish_progress(value: int) -> None:
-            if on_progress is None:
-                return
-            try:
-                on_progress(ExecutionProgress(value, len(tasks)))
-            except Exception:
-                # UI observers do not own task execution.
-                return
-
-        def run_batch(batch_indices: tuple[int, ...]) -> None:
-            nonlocal completed
-            if on_batch_started is not None:
-                try:
-                    on_batch_started(tuple(tasks[index] for index in batch_indices))
-                except Exception:
-                    pass
-
-            batch_results: dict[int, TaskResult[TaskT]] = {}
-            batch_lock = threading.Lock()
-
-            def worker(index: int) -> None:
-                nonlocal completed
-                started = False
-                if token.is_cancelled:
-                    outcome = RequestOutcome.cancelled("cancelled before start")
-                else:
-                    started = True
-                    if on_started is not None:
-                        try:
-                            on_started(tasks[index])
-                        except Exception:
-                            pass
-                    try:
-                        outcome = operation(tasks[index], token)
-                        if not isinstance(outcome, RequestOutcome):
-                            raise TypeError("operations must return RequestOutcome")
-                    except CancellationRequested:
-                        outcome = RequestOutcome.cancelled("cancelled")
-                    except Exception as exc:
-                        outcome = RequestOutcome.unknown(str(exc) or type(exc).__name__)
-
-                result = TaskResult(tasks[index], started, outcome)
-                if on_finished is not None:
-                    try:
-                        on_finished(result)
-                    except Exception:
-                        pass
-                with batch_lock:
-                    batch_results[index] = result
-                with lock:
-                    result_slots[index] = result
-                    completed += 1
-                    # Publish while holding the completion lock so observers see
-                    # monotonically increasing values even when workers finish
-                    # at nearly the same time.
-                    publish_progress(completed)
-
-            workers = [
-                threading.Thread(
-                    target=worker, args=(index,), name=f"welearn-task-{index}", daemon=False
-                )
-                for index in batch_indices
-            ]
-            for thread in workers:
-                thread.start()
-            for thread in workers:
-                thread.join()
-
-            if on_batch_finished is not None:
-                ordered_results = tuple(
-                    batch_results[index] for index in batch_indices if index in batch_results
-                )
-                try:
-                    on_batch_finished(ordered_results)
-                except Exception:
-                    pass
+        state = _ExecutionState.create(tasks)
 
         # Deliberately execute fixed waves. A task that finishes early does not
         # cause the next lesson to start until the whole current wave is done.
@@ -276,23 +232,108 @@ class CooperativeTaskRunner:
             if token.is_cancelled:
                 break
             batch = tuple(range(batch_start, min(batch_start + self.concurrency, len(tasks))))
-            run_batch(batch)
+            self._run_batch(batch, operation, token, callbacks, state)
             if token.is_cancelled:
                 break
 
-        for index, result in enumerate(result_slots):
+        self._complete_unstarted(callbacks, state)
+        handle._finish(state.report())
+
+    @staticmethod
+    def _run_batch(
+        indices: tuple[int, ...],
+        operation: Operation[TaskT],
+        token: CancellationToken,
+        callbacks: _RunnerCallbacks[TaskT],
+        state: _ExecutionState[TaskT],
+    ) -> None:
+        if callbacks.on_batch_started is not None:
+            try:
+                callbacks.on_batch_started(tuple(state.tasks[index] for index in indices))
+            except Exception:
+                pass
+
+        workers = [
+            threading.Thread(
+                target=CooperativeTaskRunner._execute_one,
+                args=(index, operation, token, callbacks, state),
+                name=f"welearn-task-{index}",
+                daemon=False,
+            )
+            for index in indices
+        ]
+        for thread in workers:
+            thread.start()
+        for thread in workers:
+            thread.join()
+
+        if callbacks.on_batch_finished is not None:
+            results = tuple(state.results[index] for index in indices)
+            try:
+                callbacks.on_batch_finished(
+                    tuple(result for result in results if result is not None)
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _execute_one(
+        index: int,
+        operation: Operation[TaskT],
+        token: CancellationToken,
+        callbacks: _RunnerCallbacks[TaskT],
+        state: _ExecutionState[TaskT],
+    ) -> None:
+        started = not token.is_cancelled
+        if not started:
+            outcome = RequestOutcome.cancelled("cancelled before start")
+        else:
+            if callbacks.on_started is not None:
+                try:
+                    callbacks.on_started(state.tasks[index])
+                except Exception:
+                    pass
+            outcome = CooperativeTaskRunner._invoke_operation(state.tasks[index], operation, token)
+
+        result = TaskResult(state.tasks[index], started, outcome)
+        if callbacks.on_finished is not None:
+            try:
+                callbacks.on_finished(result)
+            except Exception:
+                pass
+        state.record(index, result, callbacks.on_progress)
+
+    @staticmethod
+    def _invoke_operation(
+        task: TaskT,
+        operation: Operation[TaskT],
+        token: CancellationToken,
+    ) -> RequestOutcome:
+        try:
+            outcome = operation(task, token)
+            if not isinstance(outcome, RequestOutcome):
+                raise TypeError("operations must return RequestOutcome")
+            return outcome
+        except CancellationRequested:
+            return RequestOutcome.cancelled("cancelled")
+        except Exception as exc:
+            return RequestOutcome.unknown(str(exc) or type(exc).__name__)
+
+    @staticmethod
+    def _complete_unstarted(
+        callbacks: _RunnerCallbacks[TaskT],
+        state: _ExecutionState[TaskT],
+    ) -> None:
+        for index, result in enumerate(state.results):
             if result is None:
                 result = TaskResult(
-                    tasks[index], False, RequestOutcome.cancelled("cancelled before start")
+                    state.tasks[index],
+                    False,
+                    RequestOutcome.cancelled("cancelled before start"),
                 )
-                result_slots[index] = result
-                if on_finished is not None:
+                if callbacks.on_finished is not None:
                     try:
-                        on_finished(result)
+                        callbacks.on_finished(result)
                     except Exception:
                         pass
-                completed += 1
-                publish_progress(completed)
-
-        report = ExecutionReport(tuple(result for result in result_slots if result is not None))
-        handle._finish(report)
+                state.record(index, result, callbacks.on_progress)
