@@ -45,8 +45,15 @@ try {
     $env:WELEARN_STUDIO_SETTINGS_PATH = Join-Path $root "build\smoke-settings-$version.json"
     $env:WELEARN_STUDIO_NO_RESTORE = "1"
     $application = Join-Path $appDist "WeLearn-Studio\WeLearn-Studio.exe"
-    & $application --smoke-test
-    if ($LASTEXITCODE -ne 0) { throw "Packaged application smoke test failed." }
+    $smokeTest = Start-Process `
+        -FilePath $application `
+        -ArgumentList "--smoke-test" `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+    if ($smokeTest.ExitCode -ne 0) {
+        throw "Packaged application smoke test failed with exit code $($smokeTest.ExitCode)."
+    }
 
     $applicationFiles = Join-Path $appDist "WeLearn-Studio\*"
     $versionedPortable = Join-Path $root "dist\WeLearn-Studio-$version-windows-x64.zip"
