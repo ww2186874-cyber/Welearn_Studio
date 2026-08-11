@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.splitter.setObjectName("mainColumns")
         self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(1)
         self.splitter.addWidget(self.accounts)
         self.splitter.addWidget(self.workspace)
         self.splitter.addWidget(self.runtime)

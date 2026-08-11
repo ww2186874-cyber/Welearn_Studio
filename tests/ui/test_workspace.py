@@ -49,6 +49,17 @@ class CourseWorkspaceTests(UiTestCase):
         QTest.mouseClick(self.workspace.select_none_button, Qt.MouseButton.LeftButton)
         self.assertEqual(self.workspace.selected_unit_ids(), frozenset())
 
+    def test_unit_count_tracks_available_and_selected_units(self) -> None:
+        self.assertEqual(self.workspace.unit_count.text(), "已选 0 / 2")
+
+        self.workspace._unit_rows["unit-1"].checkbox.setChecked(True)
+        self.assertEqual(self.workspace.unit_count.text(), "已选 1 / 2")
+
+        self.workspace.unit_filter.setCurrentIndex(
+            self.workspace.unit_filter.findData("unavailable")
+        )
+        self.assertEqual(self.workspace.unit_count.text(), "已选 1 / 2")
+
     def test_selected_units_are_shared_between_modes(self) -> None:
         self.workspace._unit_rows["unit-1"].checkbox.setChecked(True)
         self.assertEqual(self.workspace.selected_unit_ids(), frozenset({"unit-1"}))

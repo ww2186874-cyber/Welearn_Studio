@@ -11,21 +11,21 @@ MAX_SCALE = 200
 DEFAULT_SCALE = 100
 
 COLORS = {
-    "canvas": "#111318",
-    "sidebar": "#171a20",
-    "panel": "#1d2129",
-    "panel_alt": "#222731",
-    "line": "#323844",
-    "line_strong": "#454d5d",
-    "text": "#f1f3f7",
-    "muted": "#9ca5b4",
-    "disabled": "#676f7c",
-    "accent": "#46a8ff",
-    "accent_hover": "#6bb9ff",
-    "accent_pressed": "#2187de",
-    "success": "#4bc98b",
-    "warning": "#f2b84b",
-    "danger": "#f06a73",
+    "canvas": "#0f1115",
+    "sidebar": "#15181e",
+    "panel": "#191d24",
+    "panel_alt": "#20252e",
+    "line": "#2c323d",
+    "line_strong": "#414957",
+    "text": "#f2f4f7",
+    "muted": "#a5aebb",
+    "disabled": "#6e7683",
+    "accent": "#4fc08d",
+    "accent_hover": "#63d19d",
+    "accent_pressed": "#2f9d70",
+    "success": "#4fc08d",
+    "warning": "#e7b45b",
+    "danger": "#e66d78",
 }
 
 ACCOUNT_STATE_COLORS = {
@@ -60,6 +60,7 @@ def build_stylesheet(scale: int) -> str:
     scale = max(MIN_SCALE, min(MAX_SCALE, int(scale)))
     s4, s6, s8, s10, s12 = (_space(value, scale) for value in (4, 6, 8, 10, 12))
     radius = _space(5, scale)
+    checkbox_size = _space(16, scale)
     return f"""
         QWidget {{ color: {COLORS["text"]}; selection-background-color: {COLORS["accent_pressed"]}; }}
         QMainWindow, QWidget#appCanvas {{ background: {COLORS["canvas"]}; }}
@@ -70,7 +71,8 @@ def build_stylesheet(scale: int) -> str:
         }}
         QLabel#muted, QLabel[muted="true"] {{ color: {COLORS["muted"]}; }}
         QLabel#sectionTitle {{ font-weight: 600; }}
-        QLabel#pageTitle {{ font-size: 15pt; font-weight: 650; }}
+        QLabel#pageTitle {{ font-size: 14pt; font-weight: 650; }}
+        QLabel#fieldLabel {{ color: {COLORS["muted"]}; font-weight: 550; }}
         QLabel#accountCountdown {{
             color: {COLORS["success"]};
             font-family: "Cascadia Mono", "Consolas", monospace;
@@ -81,12 +83,25 @@ def build_stylesheet(scale: int) -> str:
             background: {COLORS["panel_alt"]}; border: 1px solid {COLORS["line"]};
             border-radius: {radius}px; padding: {s6}px {s10}px;
         }}
-        QPushButton:hover, QToolButton:hover {{ border-color: {COLORS["line_strong"]}; background: #29303b; }}
+        QPushButton:hover, QToolButton:hover {{ border-color: {COLORS["line_strong"]}; background: #29303a; }}
         QPushButton:pressed, QToolButton:pressed {{ background: #151920; }}
+        QPushButton:focus, QToolButton:focus {{ border-color: {COLORS["accent"]}; }}
         QPushButton:disabled, QToolButton:disabled {{ color: {COLORS["disabled"]}; background: #191c22; }}
-        QPushButton[primary="true"] {{ background: {COLORS["accent_pressed"]}; border-color: {COLORS["accent"]}; font-weight: 600; }}
-        QPushButton[primary="true"]:hover {{ background: {COLORS["accent"]}; }}
-        QPushButton[danger="true"] {{ color: #ffb4ba; }}
+        QPushButton[toolbarButton="true"] {{ padding-left: {s8}px; padding-right: {s8}px; }}
+        QPushButton[actionButton="true"] {{ min-height: {_space(32, scale)}px; font-weight: 600; }}
+        QPushButton[primary="true"] {{
+            color: #07130d; background: {COLORS["accent"]};
+            border-color: {COLORS["accent_hover"]}; font-weight: 650;
+        }}
+        QPushButton[primary="true"]:hover {{ background: {COLORS["accent_hover"]}; }}
+        QPushButton[primary="true"]:pressed {{ background: {COLORS["accent_pressed"]}; color: white; }}
+        QPushButton[danger="true"] {{
+            color: #ffb8be; background: #342126; border-color: #63343b;
+        }}
+        QPushButton[danger="true"]:hover {{ background: #44272d; border-color: {COLORS["danger"]}; }}
+        QPushButton[danger="true"]:disabled {{
+            color: {COLORS["disabled"]}; background: #191c22; border-color: {COLORS["line"]};
+        }}
         QLineEdit, QComboBox, QSpinBox {{
             background: #15181e; border: 1px solid {COLORS["line"]}; border-radius: {radius}px;
             padding: {s6}px {s8}px;
@@ -126,8 +141,7 @@ def build_stylesheet(scale: int) -> str:
             border-bottom: 1px solid {COLORS["line"]}; border-radius: 0;
         }}
         QListWidget#presetList {{
-            background: #15181e; border: 1px solid {COLORS["line"]};
-            border-radius: {radius}px; padding: {s6}px;
+            background: transparent; border: 0; padding: {s6}px;
         }}
         QListWidget#presetList::item {{
             color: {COLORS["text"]}; background: {COLORS["panel_alt"]};
@@ -138,25 +152,97 @@ def build_stylesheet(scale: int) -> str:
             background: #29303b; border-color: {COLORS["line_strong"]};
         }}
         QListWidget#presetList::item:selected {{
-            color: white; background: #263b50; border-color: {COLORS["accent"]};
+            color: white; background: #20362d; border-color: {COLORS["accent"]};
         }}
+        QFrame#presetContent, QListWidget#lessonList {{
+            background: #15181e; border: 1px solid {COLORS["line"]};
+            border-radius: {radius}px;
+        }}
+        QFrame#dialogFooter {{
+            background: transparent; border: 0; border-top: 1px solid {COLORS["line"]};
+        }}
+        QListWidget#presetList:focus, QListWidget#lessonList:focus {{
+            border-color: {COLORS["accent"]};
+        }}
+        QListWidget#lessonList {{ padding: {s4}px; }}
+        QListWidget#lessonList::item {{
+            border: 0; border-bottom: 1px solid {COLORS["line"]};
+            border-radius: 0; padding: 0;
+        }}
+        QListWidget#lessonList::item:hover {{ background: #20252d; }}
+        QCheckBox[lessonSelector="true"] {{
+            padding: 0 {s8}px;
+        }}
+        QCheckBox[selectionBox="true"] {{
+            background: transparent; border: 1px solid transparent;
+            border-radius: {radius}px; padding: 0;
+        }}
+        QCheckBox[selectionBox="true"]:focus {{ border-color: {COLORS["accent"]}; }}
+        QCheckBox[selectionBox="true"]::indicator {{ width: 0; height: 0; }}
+        QLabel#selectionIndicator {{
+            color: #07130d; background: #15181e; border: 1px solid {COLORS["line_strong"]};
+            border-radius: {_space(3, scale)}px; font-weight: 700;
+            min-width: {checkbox_size}px; max-width: {checkbox_size}px;
+            min-height: {checkbox_size}px; max-height: {checkbox_size}px;
+        }}
+        QLabel#selectionIndicator[checked="true"] {{
+            background: {COLORS["accent"]}; border-color: {COLORS["accent_hover"]};
+        }}
+        QLabel#selectionIndicator:disabled {{
+            color: {COLORS["panel"]}; background: #191c22; border-color: {COLORS["disabled"]};
+        }}
+        QLabel#selectionText {{ background: transparent; border: 0; }}
         QListWidget::item {{ padding: {s4}px; border-radius: {radius}px; }}
-        QListWidget::item:selected {{ background: #263b50; }}
+        QListWidget::item:selected {{ background: #20362d; }}
+        QListWidget#accountList::item {{
+            border: 1px solid transparent; border-radius: {radius}px; padding: 0;
+        }}
+        QListWidget#accountList::item:hover {{ background: #1d222a; border-color: {COLORS["line"]}; }}
+        QListWidget#accountList::item:selected {{
+            background: #20362d; border-color: #315943;
+            border-left: {_space(3, scale)}px solid {COLORS["accent"]};
+        }}
         QHeaderView::section {{ background: {COLORS["panel_alt"]}; color: {COLORS["muted"]}; border: 0; border-bottom: 1px solid {COLORS["line"]}; padding: {s6}px; }}
         QProgressBar {{ background: #15181e; border: 1px solid {COLORS["line"]}; border-radius: {radius}px; text-align: center; min-height: {_space(16, scale)}px; }}
         QProgressBar::chunk {{ background: {COLORS["accent"]}; border-radius: {_space(4, scale)}px; }}
         QScrollArea {{ border: 0; background: transparent; }}
+        QScrollArea#unitsScroll {{
+            background: #12151a; border: 1px solid {COLORS["line"]};
+            border-radius: {radius}px;
+        }}
+        QScrollArea#unitsScroll > QWidget > QWidget {{ background: #12151a; }}
         QScrollBar:vertical {{ background: transparent; width: {s10}px; margin: 0; }}
         QScrollBar::handle:vertical {{ background: {COLORS["line_strong"]}; border-radius: {_space(4, scale)}px; min-height: {_space(28, scale)}px; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QSplitter::handle {{ background: {COLORS["line"]}; width: 1px; }}
+        QSplitter::handle:hover {{ background: {COLORS["line_strong"]}; }}
         QToolButton[segment="true"] {{ border-radius: 0; padding: {s8}px {s12}px; }}
-        QToolButton[segment="true"]:checked {{ background: #244665; border-color: {COLORS["accent"]}; color: white; }}
+        QToolButton[segment="true"]:checked {{ background: #234636; border-color: {COLORS["accent"]}; color: white; }}
         QToolButton[segmentFirst="true"] {{ border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; }}
         QToolButton[segmentLast="true"] {{ border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
         QFrame[unitRow="true"] {{ background: {COLORS["panel"]}; border-bottom: 1px solid {COLORS["line"]}; }}
+        QFrame[unitRow="true"]:hover {{ background: #20252d; }}
         QFrame[unavailable="true"] {{ background: #181b21; }}
         QFrame[unavailable="true"] QLabel {{ color: {COLORS["disabled"]}; }}
+        QFrame#surface[workspaceSection="true"] {{
+            background: transparent; border: 0; border-radius: 0;
+        }}
+        QFrame#surface[parameterSection="true"] {{
+            background: transparent; border: 0; border-top: 1px solid {COLORS["line"]};
+            border-radius: 0;
+        }}
+        QFrame#actionBar {{
+            background: transparent; border: 0; border-top: 1px solid {COLORS["line"]};
+        }}
+        QFrame#metricsGroup {{
+            background: {COLORS["panel"]}; border: 1px solid {COLORS["line"]};
+            border-radius: {radius}px;
+        }}
+        QFrame#metricCell {{ background: transparent; border: 0; }}
+        QTreeWidget#structuredLog {{
+            background: #12151a; alternate-background-color: #161a20;
+            border: 1px solid {COLORS["line"]}; border-radius: {radius}px;
+        }}
     """
 
 
@@ -174,7 +260,7 @@ def apply_theme(app: QApplication, scale: int = DEFAULT_SCALE) -> int:
     palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(COLORS["muted"]))
     app.setPalette(palette)
     font = QFont(app.font())
-    font.setPointSizeF(10.0 * scale / 100.0)
+    font.setPointSizeF(10.5 * scale / 100.0)
     app.setFont(font)
     app.setStyleSheet(build_stylesheet(scale))
     app.setProperty("interfaceScale", scale)

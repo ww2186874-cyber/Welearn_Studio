@@ -26,6 +26,8 @@ from .widgets import SearchField, StateDot, set_standard_icon
 class AccountCard(QWidget):
     def __init__(self, account: AccountView, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("accountCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.account_id = account.stable_id
         self._dot = StateDot(
             ACCOUNT_STATE_COLORS.get(account.state, ACCOUNT_STATE_COLORS["unknown"]), self
@@ -63,7 +65,7 @@ class AccountCard(QWidget):
         text_layout.addWidget(self._progress)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(10, 9, 10, 9)
         layout.addLayout(text_layout, 1)
         self.set_account(account)
 
@@ -111,6 +113,7 @@ class AccountSidebar(QFrame):
         self.search.setObjectName("accountSearch")
         self.list = QListWidget(self)
         self.list.setObjectName("accountList")
+        self.list.setSpacing(2)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.empty_label = QLabel("暂无账号", self)
@@ -142,8 +145,8 @@ class AccountSidebar(QFrame):
         list_area.addWidget(self.empty_label)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 16, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(title)
         layout.addWidget(self.search)
         layout.addLayout(list_area, 1)

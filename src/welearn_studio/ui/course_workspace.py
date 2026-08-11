@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -25,6 +24,7 @@ from .widgets import (
     SearchField,
     SectionHeading,
     SegmentedControl,
+    SelectionCheckBox,
     Surface,
     set_standard_icon,
 )
@@ -50,7 +50,7 @@ class UnitRow(QFrame):
         self.setCursor(
             Qt.CursorShape.PointingHandCursor if unit.runnable_count else Qt.CursorShape.ArrowCursor
         )
-        self.checkbox = QCheckBox(self)
+        self.checkbox = SelectionCheckBox(parent=self)
         self.checkbox.setObjectName(f"unitCheck_{unit.stable_id}")
         self.checkbox.setChecked(selected and unit.runnable_count > 0 and not unit.load_failed)
         self.checkbox.setEnabled(unit.runnable_count > 0 and not unit.load_failed)
@@ -137,10 +137,13 @@ class CourseWorkspace(QWidget):
         self.course_combo.setMinimumWidth(220)
         self.preset_button = QPushButton("配置", self)
         self.preset_button.setObjectName("presetButton")
+        self.preset_button.setProperty("toolbarButton", True)
         self.defaults_button = QPushButton("恢复默认", self)
         self.defaults_button.setObjectName("restoreDefaultsButton")
+        self.defaults_button.setProperty("toolbarButton", True)
         self.runtime_toggle = QPushButton("运行状态", self)
         self.runtime_toggle.setObjectName("runtimeToggleButton")
+        self.runtime_toggle.setProperty("toolbarButton", True)
         self.runtime_toggle.setCheckable(True)
         self.runtime_toggle.setChecked(True)
         set_standard_icon(self.runtime_toggle, QStyle.StandardPixmap.SP_FileDialogDetailedView)
@@ -148,6 +151,7 @@ class CourseWorkspace(QWidget):
         set_standard_icon(self.preset_button, QStyle.StandardPixmap.SP_FileDialogContentsView)
         self.refresh_courses_button = QPushButton("刷新", self)
         self.refresh_courses_button.setObjectName("refreshCoursesButton")
+        self.refresh_courses_button.setProperty("toolbarButton", True)
         self.refresh_courses_button.setToolTip("刷新课程")
         set_standard_icon(self.refresh_courses_button, QStyle.StandardPixmap.SP_BrowserReload)
 
@@ -159,7 +163,9 @@ class CourseWorkspace(QWidget):
         header_top.addWidget(self.defaults_button)
         header_top.addWidget(self.preset_button)
         header_course = QHBoxLayout()
-        header_course.addWidget(QLabel("课程", self))
+        course_label = QLabel("课程", self)
+        course_label.setObjectName("fieldLabel")
+        header_course.addWidget(course_label)
         header_course.addWidget(self.course_combo, 1)
         header_course.addWidget(self.refresh_courses_button)
         header = QVBoxLayout()
@@ -205,16 +211,25 @@ class CourseWorkspace(QWidget):
 
         units_surface = Surface(self)
         units_surface.setObjectName("surface")
+        units_surface.setProperty("workspaceSection", True)
         units_block = QVBoxLayout(units_surface)
-        units_block.setContentsMargins(12, 12, 12, 12)
+        units_block.setContentsMargins(0, 4, 0, 0)
         units_block.setSpacing(10)
-        units_block.addWidget(SectionHeading("单元"))
+        self.unit_count = QLabel("已选 0 / 0", self)
+        self.unit_count.setObjectName("muted")
+        unit_heading = QHBoxLayout()
+        unit_heading.setSpacing(8)
+        unit_heading.addWidget(SectionHeading("单元"))
+        unit_heading.addStretch(1)
+        unit_heading.addWidget(self.unit_count)
+        units_block.addLayout(unit_heading)
         units_block.addLayout(unit_tools)
         units_block.addWidget(self.units_scroll, 1)
 
         self.homework_parameters = Surface(self)
+        self.homework_parameters.setProperty("parameterSection", True)
         homework_layout = QVBoxLayout(self.homework_parameters)
-        homework_layout.setContentsMargins(12, 12, 12, 12)
+        homework_layout.setContentsMargins(0, 12, 0, 4)
         homework_layout.setSpacing(10)
         homework_layout.addWidget(SectionHeading("作业参数"))
         self.accuracy = LabeledSpinBox("正确率", "%", 0, 100, 100, self.homework_parameters)
@@ -222,8 +237,9 @@ class CourseWorkspace(QWidget):
         homework_layout.addWidget(self.accuracy)
 
         self.time_parameters = Surface(self)
+        self.time_parameters.setProperty("parameterSection", True)
         time_layout = QVBoxLayout(self.time_parameters)
-        time_layout.setContentsMargins(12, 12, 12, 12)
+        time_layout.setContentsMargins(0, 12, 0, 4)
         time_layout.setSpacing(10)
         time_layout.addWidget(SectionHeading("时长参数"))
         self.total_hours = LabeledSpinBox("总时长", "小时", 1, 72, 1, self.time_parameters)
@@ -262,9 +278,11 @@ class CourseWorkspace(QWidget):
         self.start_button = QPushButton("开始", self)
         self.start_button.setObjectName("startButton")
         self.start_button.setProperty("primary", True)
+        self.start_button.setProperty("actionButton", True)
         self.stop_button = QPushButton("停止", self)
         self.stop_button.setObjectName("stopButton")
         self.stop_button.setProperty("danger", True)
+        self.stop_button.setProperty("actionButton", True)
         self.stop_button.setEnabled(False)
         self.start_button.setMinimumWidth(112)
         self.stop_button.setMinimumWidth(112)
@@ -276,15 +294,22 @@ class CourseWorkspace(QWidget):
         actions.addWidget(self.start_button)
         actions.addWidget(self.stop_button)
 
+        action_bar = QFrame(self)
+        action_bar.setObjectName("actionBar")
+        action_layout = QVBoxLayout(action_bar)
+        action_layout.setContentsMargins(0, 12, 0, 0)
+        action_layout.setSpacing(10)
+        action_layout.addLayout(progress_row)
+        action_layout.addLayout(actions)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         layout.addLayout(header)
         layout.addWidget(self.mode)
         layout.addWidget(units_surface, 1)
         layout.addWidget(self.parameter_stack)
-        layout.addLayout(progress_row)
-        layout.addLayout(actions)
+        layout.addWidget(action_bar)
 
         self.course_combo.currentIndexChanged.connect(self._course_changed)
         self.refresh_courses_button.clicked.connect(self.coursesRefreshRequested)
@@ -454,6 +479,14 @@ class CourseWorkspace(QWidget):
             visible += int(matched)
         self.empty_units.setText("未找到单元" if self._units else "暂无单元")
         self.empty_units.setVisible(visible == 0)
+        available = sum(
+            unit.runnable_count > 0 and not unit.load_failed for unit in self._units.values()
+        )
+        selected = len(self._selected_unit_ids.intersection(self._units))
+        self.unit_count.setText(f"已选 {selected} / {available}")
+        self.units_layout.setStretch(0, 1 if visible == 0 else 0)
+        if self.units_layout.count() > 1:
+            self.units_layout.setStretch(self.units_layout.count() - 1, 0 if visible == 0 else 1)
 
     def _bulk_select(self, selected: bool) -> None:
         target_ids = {

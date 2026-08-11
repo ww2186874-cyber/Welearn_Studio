@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -28,6 +30,67 @@ class SearchField(QLineEdit):
         self.setPlaceholderText(placeholder)
         self.setClearButtonEnabled(True)
         self.setAccessibleName(placeholder)
+
+
+class SelectionCheckBox(QCheckBox):
+    """A consistent, high-contrast checkbox for unit and lesson selection."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty("selectionBox", True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._full_text = ""
+        self._indicator = QLabel(self)
+        self._indicator.setObjectName("selectionIndicator")
+        self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._text_label = QLabel(self)
+        self._text_label.setObjectName("selectionText")
+        self._text_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._text_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self._content = QHBoxLayout(self)
+        self._content.setContentsMargins(1, 1, 1, 1)
+        self._content.setSpacing(10)
+        self._content.addWidget(self._indicator)
+        self._content.addWidget(self._text_label, 1)
+
+        self.toggled.connect(self._sync_indicator)
+        self.setText(text)
+        self._sync_indicator(False)
+
+    def text(self) -> str:
+        return self._full_text
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        QCheckBox.setText(self, "")
+        self._text_label.setVisible(bool(text))
+        self._content.setSpacing(10 if text else 0)
+        self._update_elided_text()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def hitButton(self, pos: QPoint) -> bool:
+        """Make the whole composed control behave like a native checkbox label."""
+        return self.rect().contains(pos)
+
+    def _sync_indicator(self, checked: bool) -> None:
+        self._indicator.setText("✓" if checked else "")
+        self._indicator.setProperty("checked", checked)
+        self._indicator.style().unpolish(self._indicator)
+        self._indicator.style().polish(self._indicator)
+
+    def _update_elided_text(self) -> None:
+        available = self._text_label.width()
+        visible_text = (
+            self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available)
+            if available > 0
+            else self._full_text
+        )
+        self._text_label.setText(visible_text)
 
 
 class SegmentedControl(QWidget):

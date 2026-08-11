@@ -75,6 +75,12 @@ class ShellTests(UiTestCase):
         self.assertFalse(card.countdown_label.isVisible())
         self.assertEqual(card.countdown_label.text(), "")
 
+    def test_account_card_does_not_intercept_row_selection(self) -> None:
+        self.window.set_accounts([AccountView("a1", "first@example.test")], "a1")
+        card = self.window.accounts.list.itemWidget(self.window.accounts.list.item(0))
+
+        self.assertTrue(card.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+
     def test_task_and_navigation_actions_are_exposed_as_signals(self) -> None:
         self.window.set_accounts([AccountView("a1", "first@example.test")], "a1")
         self.window.set_account_context(
@@ -191,6 +197,16 @@ class RuntimeOverviewTests(UiTestCase):
         self.assertEqual(panel.remaining_value[1].text(), "01:00:00")
         self.assertEqual(panel.log.columnCount(), 4)
         self.assertEqual(panel.log.topLevelItemCount(), 2)
+        for cell, value_label in (
+            panel.completed_value,
+            panel.active_value,
+            panel.elapsed_value,
+            panel.remaining_value,
+            panel.estimated_value,
+            panel.platform_value,
+        ):
+            self.assertEqual(cell.objectName(), "metricCell")
+            self.assertTrue(value_label.alignment() & Qt.AlignmentFlag.AlignHCenter)
         panel.severity_filter.setCurrentIndex(panel.severity_filter.findData("error"))
         self.assertEqual(panel.log.topLevelItemCount(), 1)
         panel.close()
